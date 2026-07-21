@@ -37,6 +37,16 @@ Game site where kids play and learn.
   - If the implementation is in a subdirectory, types can be in `bar/types.ts`.
 - Name type files with the `.type.ts` suffix.
 
+### Parameters
+- Avoid boolean flags. Use an object constant and derive a union type from it.
+  - Correct:
+    ```ts
+    const Variant = { Primary: "primary", Secondary: "secondary" } as const;
+    type Variant = (typeof Variant)[keyof typeof Variant];
+    function Button(props: { variant: Variant }) { ... }
+    ```
+  - Wrong: `function Button(props: { primary: boolean }) { ... }`
+
 ## Build Output
 
 Production build goes to `dist/`.
