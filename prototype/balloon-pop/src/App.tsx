@@ -92,6 +92,31 @@ export default function App() {
   const idRef = useRef(0)
   const startedAtRef = useRef<number | null>(null)
 
+  const spawnBalloons = useCallback(
+    (balloons: Balloon[], targetCount: number): Balloon[] => {
+      const next = [...balloons]
+      while (next.length < targetCount) {
+        const holeIndex = pickEmptyHole(next, HOLE_COUNT)
+        if (holeIndex === null) break
+
+        const id = idRef.current++
+        const b: Balloon = {
+          id,
+          holeIndex,
+          color: randomColor(),
+          state: 'rising',
+          createdAt: Date.now(),
+        }
+        setTimeout(() => {
+          setBalloons((curr) => curr.map((x) => (x.id === id ? { ...x, state: 'idle' } : x)))
+        }, RISE_MS)
+        next.push(b)
+      }
+      return next
+    },
+    [],
+  )
+
   const startPlaying = useCallback(() => {
     setStatus('playing')
     startedAtRef.current = Date.now()
@@ -110,9 +135,16 @@ export default function App() {
     setStatus(result)
   }, [])
 
+  // Win immediately when the target is reached.
+  useEffect(() => {
+    if (status === 'playing' && pops >= TARGET_POPS) {
+      finishGame('won')
+    }
+  }, [status, pops, finishGame])
+
   const popBalloon = useCallback(
     (b: Balloon, clientX: number, clientY: number) => {
-      if (status === 'won' || status === 'lost') return
+      if (status !== 'playing') return
       if (b.state === 'popping' || b.state === 'retracting') return
 
       setBalloons((prev) => prev.map((x) => (x.id === b.id ? { ...x, state: 'popping' } : x)))
@@ -136,37 +168,22 @@ export default function App() {
       s.currentTime = 0
       s.play().catch(() => {})
 
-      setPops((prev) => {
-        const next = prev + 1
-        if (next >= TARGET_POPS) {
-          finishGame('won')
-        }
-        return next
-      })
+      setPops((prev) => prev + 1)
 
       setTimeout(() => {
         setBalloons((prev) => prev.filter((x) => x.id !== b.id))
       }, POP_MS)
     },
-    [status, finishGame],
+    [status],
   )
 
   const handleBalloonPointerDown = useCallback(
     (e: React.PointerEvent, b: Balloon) => {
       e.stopPropagation()
-      if (status === 'idle') {
-        startPlaying()
-      }
       popBalloon(b, e.clientX, e.clientY)
     },
-    [status, startPlaying, popBalloon],
+    [popBalloon],
   )
-
-  const handleContainerPointerDown = useCallback(() => {
-    if (status === 'idle') {
-      startPlaying()
-    }
-  }, [status, startPlaying])
 
   const restartNow = useCallback(
     (e: React.PointerEvent) => {
@@ -212,25 +229,7 @@ export default function App() {
           }, RETRACT_MS)
         }
 
-        if (next.length < maxActive) {
-          const holeIndex = pickEmptyHole(next, HOLE_COUNT)
-          if (holeIndex !== null) {
-            const id = idRef.current++
-            const b: Balloon = {
-              id,
-              holeIndex,
-              color: randomColor(),
-              state: 'rising',
-              createdAt: now,
-            }
-            setTimeout(() => {
-              setBalloons((curr) => curr.map((x) => (x.id === id ? { ...x, state: 'idle' } : x)))
-            }, RISE_MS)
-            return [...next, b]
-          }
-        }
-
-        return next
+        return spawnBalloons(next, maxActive)
       })
 
       setConfetti((prev) => prev.filter((c) => now - c.createdAt < CONFETTI_MS))
@@ -242,30 +241,16 @@ export default function App() {
   // Spawn one balloon immediately when the game starts so the screen isn't empty.
   useEffect(() => {
     if (status !== 'playing') return
-    const now = Date.now()
     setBalloons((prev) => {
       if (prev.length > 0) return prev
-      const holeIndex = pickEmptyHole(prev, HOLE_COUNT)
-      if (holeIndex === null) return prev
-      const id = idRef.current++
-      const b: Balloon = {
-        id,
-        holeIndex,
-        color: randomColor(),
-        state: 'rising',
-        createdAt: now,
-      }
-      setTimeout(() => {
-        setBalloons((curr) => curr.map((x) => (x.id === id ? { ...x, state: 'idle' } : x)))
-      }, RISE_MS)
-      return [b]
+      return spawnBalloons(prev, 1)
     })
   }, [status])
 
   const isFinished = status === 'won' || status === 'lost'
 
   return (
-    <div className="game" onPointerDown={handleContainerPointerDown}>
+    <div className="game">
       <div className="hud">
         <div className="hud-section">
           <div className="timer-bar">
@@ -315,6 +300,18 @@ export default function App() {
         />
       ))}
 
+      {status === 'idle' && (
+        <div className="overlay">
+          <div className="overlay__content">
+            <div className="overlay__emoji">🎈</div>
+            <div className="overlay__title">Balloon Pop!</div>
+            <button className="overlay__button" onPointerDown={startPlaying}>
+              Start
+            </button>
+          </div>
+        </div>
+      )}
+
       {isFinished && (
         <div className="overlay">
           <div className="overlay__content">
@@ -324,7 +321,7 @@ export default function App() {
             </div>
             <div className="overlay__count">{pops} pops</div>
             <button className="overlay__button" onPointerDown={restartNow}>
-              Play again
+              Start again
             </button>
           </div>
         </div>
