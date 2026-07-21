@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-// PROTOTYPE — toddler balloon-pop game
-// Question: does this game loop feel right for a 2-year-old?
-// Throwaway; do not ship to production.
+// v1 toddler balloon-pop game
+// Built from the prototype on branch prototype/balloon-pop; see issue #9.
 
 const HOLE_COUNT = 9
 const AUTO_RETRACT_MS = 3500
@@ -11,8 +10,14 @@ const RISE_MS = 300
 const RETRACT_MS = 300
 const POP_MS = 200
 const CONFETTI_MS = 500
-const MAX_ACTIVE_CAP = 4
-const RAMP_EVERY_POPS = 5
+const GAME_DURATION_MS = 60000
+const TARGET_POPS = 20
+
+const RAMP_STEPS = [
+  { atMs: 0, maxActive: 1 },
+  { atMs: 10000, maxActive: 2 },
+  { atMs: 25000, maxActive: 3 },
+]
 
 const COLORS = [
   '#FF6B6B', // red
@@ -22,6 +27,8 @@ const COLORS = [
   '#A55EEA', // purple
   '#54A0FF', // blue
 ]
+
+type GameStatus = 'idle' | 'playing' | 'won' | 'lost'
 
 type BalloonState = 'rising' | 'idle' | 'popping' | 'retracting'
 
@@ -43,46 +50,6 @@ type ConfettiPiece = {
   createdAt: number
 }
 
-function playPop(audioCtx: AudioContext) {
-  const t = audioCtx.currentTime
-  const duration = 0.12
-
-  // Noise burst
-  const bufferSize = Math.floor(audioCtx.sampleRate * duration)
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate)
-  const data = buffer.getChannelData(0)
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 2)
-  }
-
-  const noise = audioCtx.createBufferSource()
-  noise.buffer = buffer
-
-  const noiseGain = audioCtx.createGain()
-  noiseGain.gain.setValueAtTime(0.8, t)
-  noiseGain.gain.exponentialRampToValueAtTime(0.01, t + duration)
-
-  noise.connect(noiseGain)
-  noiseGain.connect(audioCtx.destination)
-  noise.start(t)
-  noise.stop(t + duration)
-
-  // Short body tone
-  const osc = audioCtx.createOscillator()
-  osc.type = 'triangle'
-  osc.frequency.setValueAtTime(280, t)
-  osc.frequency.exponentialRampToValueAtTime(80, t + duration)
-
-  const oscGain = audioCtx.createGain()
-  oscGain.gain.setValueAtTime(0.4, t)
-  oscGain.gain.exponentialRampToValueAtTime(0.01, t + duration)
-
-  osc.connect(oscGain)
-  oscGain.connect(audioCtx.destination)
-  osc.start(t)
-  osc.stop(t + duration)
-}
-
 function pickEmptyHole(balloons: Balloon[], holeCount: number): number | null {
   const occupied = new Set(balloons.map((b) => b.holeIndex))
   const free: number[] = []
@@ -101,85 +68,131 @@ function randomConfettiColor(): string {
   return COLORS[Math.floor(Math.random() * COLORS.length)]
 }
 
+function maxActiveForElapsed(elapsedMs: number): number {
+  let max = 1
+  for (const step of RAMP_STEPS) {
+    if (elapsedMs >= step.atMs) max = step.maxActive
+  }
+  return max
+}
+
+function formatTime(ms: number): string {
+  const seconds = Math.max(0, Math.ceil(ms / 1000))
+  return String(seconds)
+}
+
 export default function App() {
   const [balloons, setBalloons] = useState<Balloon[]>([])
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([])
-  const [maxActive, setMaxActive] = useState(1)
-  const [, setPops] = useState(0)
-  const [started, setStarted] = useState(false)
+  const [status, setStatus] = useState<GameStatus>('idle')
+  const [pops, setPops] = useState(0)
+  const [timeLeftMs, setTimeLeftMs] = useState(GAME_DURATION_MS)
 
-  const audioCtxRef = useRef<AudioContext | null>(null)
+  const popSoundRef = useRef(new Audio('/sounds/pop1.ogg'))
   const idRef = useRef(0)
+  const startedAtRef = useRef<number | null>(null)
 
-  const ensureAudio = useCallback(() => {
-    if (!started) setStarted(true)
-    if (!audioCtxRef.current) {
-      const Ctx = window.AudioContext || (window as any).webkitAudioContext
-      audioCtxRef.current = new Ctx()
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume()
-    }
-  }, [started])
+  const startPlaying = useCallback(() => {
+    setStatus('playing')
+    startedAtRef.current = Date.now()
+  }, [])
 
-  const popBalloon = useCallback((b: Balloon, clientX: number, clientY: number) => {
-    if (b.state === 'popping' || b.state === 'retracting') return
+  const resetGame = useCallback(() => {
+    setBalloons([])
+    setConfetti([])
+    setPops(0)
+    setTimeLeftMs(GAME_DURATION_MS)
+    startedAtRef.current = null
+    setStatus('idle')
+  }, [])
 
-    ensureAudio()
+  const finishGame = useCallback((result: 'won' | 'lost') => {
+    setStatus(result)
+  }, [])
 
-    setBalloons((prev) => prev.map((x) => (x.id === b.id ? { ...x, state: 'popping' } : x)))
+  const popBalloon = useCallback(
+    (b: Balloon, clientX: number, clientY: number) => {
+      if (status === 'won' || status === 'lost') return
+      if (b.state === 'popping' || b.state === 'retracting') return
 
-    const now = Date.now()
-    const pieces: ConfettiPiece[] = []
-    for (let i = 0; i < 8; i++) {
-      pieces.push({
-        id: idRef.current++,
-        x: clientX,
-        y: clientY,
-        angle: Math.random() * 360,
-        distance: 40 + Math.random() * 60,
-        color: randomConfettiColor(),
-        createdAt: now,
-      })
-    }
-    setConfetti((prev) => [...prev, ...pieces])
+      setBalloons((prev) => prev.map((x) => (x.id === b.id ? { ...x, state: 'popping' } : x)))
 
-    if (audioCtxRef.current) {
-      playPop(audioCtxRef.current)
-    }
-
-    setPops((prev) => {
-      const next = prev + 1
-      if (next % RAMP_EVERY_POPS === 0) {
-        setMaxActive((m) => Math.min(m + 1, MAX_ACTIVE_CAP))
+      const now = Date.now()
+      const pieces: ConfettiPiece[] = []
+      for (let i = 0; i < 8; i++) {
+        pieces.push({
+          id: idRef.current++,
+          x: clientX,
+          y: clientY,
+          angle: Math.random() * 360,
+          distance: 40 + Math.random() * 60,
+          color: randomConfettiColor(),
+          createdAt: now,
+        })
       }
-      return next
-    })
+      setConfetti((prev) => [...prev, ...pieces])
 
-    setTimeout(() => {
-      setBalloons((prev) => prev.filter((x) => x.id !== b.id))
-    }, POP_MS)
-  }, [ensureAudio])
+      const s = popSoundRef.current
+      s.currentTime = 0
+      s.play().catch(() => {})
+
+      setPops((prev) => {
+        const next = prev + 1
+        if (next >= TARGET_POPS) {
+          finishGame('won')
+        }
+        return next
+      })
+
+      setTimeout(() => {
+        setBalloons((prev) => prev.filter((x) => x.id !== b.id))
+      }, POP_MS)
+    },
+    [status, finishGame],
+  )
 
   const handleBalloonPointerDown = useCallback(
     (e: React.PointerEvent, b: Balloon) => {
       e.stopPropagation()
+      if (status === 'idle') {
+        startPlaying()
+      }
       popBalloon(b, e.clientX, e.clientY)
     },
-    [popBalloon],
+    [status, startPlaying, popBalloon],
   )
 
-  // First interaction starts the loop and audio context.
   const handleContainerPointerDown = useCallback(() => {
-    ensureAudio()
-  }, [ensureAudio])
+    if (status === 'idle') {
+      startPlaying()
+    }
+  }, [status, startPlaying])
 
-  // Game loop: spawn, auto-retract, cleanup confetti.
+  const restartNow = useCallback(
+    (e: React.PointerEvent) => {
+      e.stopPropagation()
+      resetGame()
+      startPlaying()
+    },
+    [resetGame, startPlaying],
+  )
+
+  // Game loop: spawn, auto-retract, cleanup confetti, timer.
   useEffect(() => {
-    if (!started) return
+    if (status !== 'playing') return
 
     const interval = setInterval(() => {
       const now = Date.now()
+      const elapsed = startedAtRef.current ? now - startedAtRef.current : 0
+      const remaining = Math.max(0, GAME_DURATION_MS - elapsed)
+      setTimeLeftMs(remaining)
+
+      if (remaining === 0) {
+        finishGame('lost')
+        return
+      }
+
+      const maxActive = maxActiveForElapsed(elapsed)
 
       setBalloons((prev) => {
         let next = prev
@@ -224,11 +237,11 @@ export default function App() {
     }, SPAWN_INTERVAL_MS)
 
     return () => clearInterval(interval)
-  }, [started, maxActive])
+  }, [status, finishGame])
 
   // Spawn one balloon immediately when the game starts so the screen isn't empty.
   useEffect(() => {
-    if (!started) return
+    if (status !== 'playing') return
     const now = Date.now()
     setBalloons((prev) => {
       if (prev.length > 0) return prev
@@ -247,11 +260,31 @@ export default function App() {
       }, RISE_MS)
       return [b]
     })
-  }, [started])
+  }, [status])
+
+  const isFinished = status === 'won' || status === 'lost'
 
   return (
     <div className="game" onPointerDown={handleContainerPointerDown}>
-      <div className="grid">
+      <div className="hud">
+        <div className="hud-section">
+          <div className="timer-bar">
+            <div
+              className="timer-bar__fill"
+              style={{ width: `${(timeLeftMs / GAME_DURATION_MS) * 100}%` }}
+            />
+          </div>
+          <div className="timer-number">{formatTime(timeLeftMs)}</div>
+        </div>
+        <div className="hud-section">
+          <div className="counter">
+            {pops} / {TARGET_POPS}
+          </div>
+          <div className="counter-label">pops</div>
+        </div>
+      </div>
+
+      <div className={`grid ${isFinished ? 'grid--dimmed' : ''}`}>
         {Array.from({ length: HOLE_COUNT }).map((_, i) => {
           const b = balloons.find((x) => x.holeIndex === i)
           return (
@@ -281,6 +314,21 @@ export default function App() {
           } as React.CSSProperties}
         />
       ))}
+
+      {isFinished && (
+        <div className="overlay">
+          <div className="overlay__content">
+            <div className="overlay__emoji">{status === 'won' ? '🎉' : '⏰'}</div>
+            <div className="overlay__title">
+              {status === 'won' ? 'You did it!' : "Time's up!"}
+            </div>
+            <div className="overlay__count">{pops} pops</div>
+            <button className="overlay__button" onPointerDown={restartNow}>
+              Play again
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
