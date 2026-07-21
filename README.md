@@ -1,6 +1,6 @@
 # Toddler Balloon Pop
 
-A simple tap-to-pop balloon game for toddlers, built as a React + Vite SPA.
+A simple tap-to-pop balloon game for toddlers, built as a SolidJS + Vite SPA.
 
 Designed for a 2–3 year old: big targets, no complex menus, instant feedback, and no penalty for missing.
 
@@ -12,20 +12,20 @@ Designed for a 2–3 year old: big targets, no complex menus, instant feedback, 
 ## Run locally
 
 ```bash
-pnpm install
-pnpm dev
+bun install
+bun dev
 ```
 
 Then open the printed URL. Use `--host` if you want to test from a phone or tablet on the same network:
 
 ```bash
-pnpm dev --host
+bun dev --host
 ```
 
 ## Build
 
 ```bash
-pnpm build
+bun build
 ```
 
 Output goes to `dist/`.
