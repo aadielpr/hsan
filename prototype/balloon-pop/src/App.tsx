@@ -91,6 +91,7 @@ export default function App() {
   const popSoundRef = useRef(new Audio('/sounds/pop1.ogg'))
   const idRef = useRef(0)
   const startedAtRef = useRef<number | null>(null)
+  const popsRef = useRef(0)
 
   const spawnBalloons = useCallback(
     (balloons: Balloon[], targetCount: number): Balloon[] => {
@@ -126,6 +127,7 @@ export default function App() {
     setBalloons([])
     setConfetti([])
     setPops(0)
+    popsRef.current = 0
     setTimeLeftMs(GAME_DURATION_MS)
     startedAtRef.current = null
     setStatus('idle')
@@ -134,13 +136,6 @@ export default function App() {
   const finishGame = useCallback((result: 'won' | 'lost') => {
     setStatus(result)
   }, [])
-
-  // Win immediately when the target is reached.
-  useEffect(() => {
-    if (status === 'playing' && pops >= TARGET_POPS) {
-      finishGame('won')
-    }
-  }, [status, pops, finishGame])
 
   const popBalloon = useCallback(
     (b: Balloon, clientX: number, clientY: number) => {
@@ -168,7 +163,9 @@ export default function App() {
       s.currentTime = 0
       s.play().catch(() => {})
 
-      setPops((prev) => prev + 1)
+      const nextPops = popsRef.current + 1
+      popsRef.current = nextPops
+      setPops(nextPops)
 
       setTimeout(() => {
         setBalloons((prev) => prev.filter((x) => x.id !== b.id))
@@ -205,7 +202,7 @@ export default function App() {
       setTimeLeftMs(remaining)
 
       if (remaining === 0) {
-        finishGame('lost')
+        finishGame(popsRef.current >= TARGET_POPS ? 'won' : 'lost')
         return
       }
 
